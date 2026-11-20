@@ -196,6 +196,20 @@ class TestImageInput(unittest.TestCase):
         self.assertLessEqual(len(rows), goldberg.MAX_ROWS)
         self.assertGreater(max(map(len, rows)), 250)
 
+    def test_large_jpeg_decodes_reduced(self):
+        """Big JPEGs of any aspect ratio decode at reduced size (time and memory)."""
+        for size in ((9000, 3000), (3000, 9000), (8000, 5000)):
+            with self.subTest(size=size):
+                path = self._save(f"big_{size[0]}x{size[1]}.jpg",
+                                  lambda p, s=size: self.ref.resize(s).save(p, quality=80))
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    with Image.open(path) as im:
+                        goldberg._request_reduced_decode(im)
+                        im.load()
+                        self.assertLess(max(im.size), max(size))
+                        self.assertGreaterEqual(max(im.size), goldberg._JPEG_DRAFT_SIDE)
+
     def test_tiny_and_blank_images(self):
         tiny = self._save("tiny.png", lambda p: Image.new("RGB", (1, 1), "black").save(p))
         self.assertIsInstance(self._render(tiny), str)

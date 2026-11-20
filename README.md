@@ -151,21 +151,92 @@ Animated GIF/WebP and multi-page TIFF files use their **first frame**.
 
 **SVG is not supported** (it is a vector format): export it to PNG first.
 
+### Choosing a good image
+
+**In short:** a PNG or JPEG about **800–4000 pixels wide**, showing a **bold, simple,
+high-contrast** subject (a logo, icon, wordmark or silhouette), gives the best results.
+Intricate images are the main thing that does *not* work well, however large the file.
+
+#### Image size
+
+Measured on a 1400×860 logo in the default `shape` style at 180 characters wide.
+"Detail kept" compares the art with the art made from the full-quality image.
+
+| Source width | Result | Convert time | Peak memory |
+| --- | --- | --- | --- |
+| 100–200 px | Too small: shapes break up, upscaled blur (30–55% of detail kept) | ~0.1 s | ~75 MB |
+| 400 px | Usable but soft (~85%) | ~0.1 s | ~75 MB |
+| **800–4000 px** | **Sweet spot: full detail (95–100%)** | 0.1–0.25 s | 75–125 MB |
+| 4000–12000 px JPEG | Works; no extra detail. Decoded at reduced size, so still cheap | ~0.2 s | 90–125 MB |
+| 4000–12000 px PNG, TIFF, ... | Works; no extra detail, but slower and memory-hungry | 0.3–1.3 s | 0.1–0.9 GB |
+| over ~178 megapixels | Refused (Pillow's decompression-bomb protection) | | |
+
+A typical 12-megapixel phone photo (4032×3024 JPEG) converts in about 0.4 s using about
+150 MB. Building the program afterwards takes a few hundredths of a second.
+
+**Rule of thumb: give the source at least 4 pixels per column of art.** That means 720 px
+wide for the default 180 columns, 1600 px for `-w 400` and 4000 px for `-w 1000`. Past about
+6 pixels per column there is no further gain, so very large originals don't help; scaling
+them down first (to 2000–4000 px) does no harm. What matters is pixel dimensions, not file
+size in MB.
+
+#### Detail: what survives the conversion
+
+Each character stands for a block of the image. At width `W`, a block is about 1/`W` of
+the image's width across and twice that tall: at the default 180 columns, roughly a 5×10 px
+patch of a 900 px wide image. Anything much smaller than one block is averaged away. In
+practice:
+
+- **Lines and outlines** survive if they are at least about half a block thick (1/360 of
+  the image width at the default). Hairlines vanish or turn into specks.
+- **Text** needs about 3 rows of characters to be legible, so its capital letters should be
+  at least about 6/`W` of the image width tall: **3.3% at 180 columns**, 2.7% at 220, 1.5% at
+  400. For example, a logo whose tagline has capitals about 4.5% of the image width reads
+  clearly at 180; text around 2% needs about `-w 300`, and anything much smaller is unlikely to
+  read at any practical width.
+- **Shapes must differ in brightness**, not just colour. Art is monochrome, so a red and a
+  green of similar brightness merge into one shape.
+
+#### Intricate images
+
+Excessively intricate images rarely look good as ASCII art, because most of what makes
+them interesting is detail smaller than a character. More width helps only up to a point,
+and wide art is itself hard to view.
+
+| Works well | Works poorly |
+| --- | --- |
+| Logos, wordmarks, emblems, icons | Detailed illustrations, engravings, crests with fine linework |
+| Silhouettes and bold shapes | Maps, charts and diagrams with small labels |
+| Large lettering, signs, slogans | Screenshots of small UI text, documents, spreadsheets |
+| Line art with thick strokes | Dense patterns and textures: foliage, fabric, hair, crowds |
+| Flat graphics with a plain background | Busy backgrounds, low contrast, many small objects |
+| Strongly lit portraits, in moderation (`-m braille --dither`) | Subtle gradients and shading (turn into noise or bands) |
+
+If an image is too intricate:
+
+1. **Crop** to the part that matters; fewer elements means bigger elements.
+2. **Simplify** in an image editor: remove the background, raise contrast, or convert to
+   black and white; thicken thin lines.
+3. **Go wider** (`-w 220`, `-w 300`) if the problem is small text or thin lines, and view
+   the result in a wide window.
+4. **Try another style:** `-m braille --dither` or `-m ascii` suit photos better than the
+   default `shape`.
+5. **Preview before you share:** generate the program and run it
+   (`python goldberg.py -i logo.png -o puzzle.py && python puzzle.py`).
+
 ## Limitations
 
-- **Very high resolution or highly detailed images.** The art is at most 1000 characters
-  wide and 500 rows tall, and by default 180 wide, so an image is effectively reduced to
-  roughly 180×100 "pixels" of character shapes. Tall images (e.g. long screenshots) are
-  narrowed to stay within 500 rows. Fine detail (thin lines, small print, textures, faces in a
-  crowd) is lost or turns to noise; bold, high-contrast subjects such as logos, icons and
-  large lettering work best. Very large files are downscaled to 4096 px on the longest side
-  as they load, and images over about 178 megapixels are refused by Pillow's built-in
-  decompression-bomb protection.
+- **Intricate or highly detailed images** lose most of their detail: the art is a grid of
+  at most 1000×500 characters (180 wide by default), and anything smaller than a character
+  is averaged away. See [Choosing a good image](#choosing-a-good-image).
+- **Very high resolution adds nothing.** Images are downscaled to at most 4096 px on the
+  longest side as they load (JPEGs straight to about 2048 px), so huge originals cost time
+  and memory without improving the art. Images over about 178 megapixels are refused by
+  Pillow's built-in decompression-bomb protection, and very large PNG/TIFF files (40+
+  megapixels) need 0.5–1 GB of memory to decode.
+- **Tall images** (e.g. long screenshots) are narrowed so the art stays within 500 rows.
 - **Photographs** convert less cleanly than flat graphics. Shading becomes texture; try
   `-m braille --dither` or `-m ascii` and experiment with `-w`.
-- **Small text in an image** needs width. Text that is tiny relative to the whole picture
-  may need `-w 200` or more to become readable, and the result is then that many
-  characters wide.
 - **Colour is lost.** Art is monochrome; different colours are only distinguished by
   brightness, and two colours of similar brightness merge into one shape.
 - **Viewing wide art.** Output wider than your terminal or editor will wrap and look
@@ -199,7 +270,7 @@ Animated GIF/WebP and multi-page TIFF files use their **first frame**.
 python -m unittest discover -s tests
 ```
 
-The suite (41 tests) covers correctness across many seeds and tricky strings, the line
+The suite (42 tests) covers correctness across many seeds and tricky strings, the line
 budget (default range, custom and exact budgets, impossible budgets), randomness, every byte transform, image formats and bit depths, transparency, EXIF
 rotation, large and blank images, error messages, and the command line. Tests that need an
 optional codec or package are skipped when it is not installed.

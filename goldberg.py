@@ -710,6 +710,7 @@ _ADAPTIVE_FLOOR = 40     # ...and not just dark noise
 
 
 MAX_SOURCE_SIDE = 4096   # larger images are downscaled on load (output is far smaller anyway)
+_JPEG_DRAFT_SIDE = 2048  # JPEGs may decode straight down to this; detail beyond it is unused
 
 
 def _register_optional_formats() -> None:
@@ -719,6 +720,18 @@ def _register_optional_formats() -> None:
     except ImportError:
         return
     pillow_heif.register_heif_opener()
+
+
+def _request_reduced_decode(im) -> None:
+    """Let a large JPEG decode straight to 1/2, 1/4 or 1/8 size (no-op for other formats).
+
+    The decoder only shrinks while the result still covers the requested size, so ask
+    for the image's own aspect ratio (not a square) with its longest side at
+    _JPEG_DRAFT_SIDE. Saves most of the time and memory for big photos.
+    """
+    scale = _JPEG_DRAFT_SIDE / max(im.size)
+    if scale < 1:
+        im.draft(None, (max(1, int(im.width * scale)), max(1, int(im.height * scale))))
 
 
 def _to_gray(im):
@@ -751,7 +764,7 @@ def _load_gray(path: str, invert: bool):
     _register_optional_formats()
     try:
         with Image.open(path) as im:
-            im.draft("RGB", (MAX_SOURCE_SIDE, MAX_SOURCE_SIDE))  # fast JPEG downscale
+            _request_reduced_decode(im)
             im = ImageOps.exif_transpose(im)
             if max(im.size) > MAX_SOURCE_SIDE:
                 im.thumbnail((MAX_SOURCE_SIDE, MAX_SOURCE_SIDE), Image.Resampling.LANCZOS)
