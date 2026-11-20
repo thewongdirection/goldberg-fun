@@ -1,0 +1,4 @@
+# Text mode needs only the Python standard library (3.9+).
+# Image mode:
+pillow>=10.1
+numpy>=1.22

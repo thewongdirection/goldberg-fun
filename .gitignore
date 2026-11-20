@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.coverage
+# generated challenges and art (keep sources only)
+out/
+*_art.py
+*_output.txt
+.DS_Store
