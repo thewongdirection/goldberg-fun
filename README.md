@@ -17,7 +17,7 @@ reading the output is easy if you run it, and a satisfying exercise if you don't
 $ python goldberg.py "Welcome to the lab"
 def lIIl1l1():
     ββ = lambda γθ: lambda ξ: ξ
-    ...                        # ~35 lines of nonsense
+    ...                        # 30-40 lines of nonsense
     return OOO0O(...)
 
 lIIl1l1()
@@ -47,7 +47,9 @@ generated function prints that image as ASCII art.
   - **4 pipeline styles** (reduce, loop, nested calls, composed lambdas) and 4 ways to print.
 - **Always correct.** Every generated program is executed before it is returned and must
   print exactly the input (plus a newline), or it is rebuilt.
-- **Short.** The generated function is at most **40 lines**.
+- **Length you choose.** By default each generated function is **35 lines, give or take
+  5** (so 30–40), picked at random per run. Set your own target with `-n/--lines` and the
+  allowed spread with `--variation`. Long budgets stack more scrambling steps and decoys.
 - **Reproducible on request** with `--seed`.
 
 ## Prerequisites
@@ -78,7 +80,23 @@ python goldberg.py "Welcome" -o puzzle.py          # write it to a file
 echo "Welcome" | python goldberg.py -              # read the text from stdin
 python goldberg.py "Welcome" --seed 42             # same seed -> same program
 python goldberg.py "Welcome" --no-verify           # skip the self-check (faster)
+python goldberg.py "Welcome" -n 60                 # about 60 lines (55-65)
+python goldberg.py "Welcome" -n 20 --variation 0   # exactly 20 lines
+python goldberg.py "Welcome" -n 150 --variation 25 # anywhere from 125 to 175 lines
 ```
+
+### Program length
+
+| Option | Meaning |
+| --- | --- |
+| `-n N`, `--lines N` | Target length of the generated function, counting the `def` line. Default **35**. |
+| `--variation V` | How far each machine may land from the target: anywhere in N−V to N+V. Default **5**; `0` means exactly N lines. |
+
+Every program is checked against this range before it is returned. Small budgets get fewer
+scrambling steps; large ones get more steps (up to 12) and more decoys. The practical
+minimum is about **11 lines**: a working machine needs its imports, at least one scrambling
+step, the data and the decoding pipeline. Asking for less gives an error that says how short
+it could get, e.g. `cannot fit a machine into 8-8 lines; the shortest built was 10 lines`.
 
 Any Unicode text works, including quotes, backslashes, newlines, accents, CJK and emoji.
 
@@ -103,8 +121,8 @@ How the conversion works:
   actual shapes of the 95 printable ASCII characters drawn in a monospace font, and the
   closest match wins. Edges become `/`, `_`, `(`, `|` and friends, which keeps outlines crisp
   and small text legible.
-- In image mode the 40-line limit applies to the code only: the art's data block counts
-  as one line, however long it is.
+- In image mode the line budget (`-n`, `--variation`) applies to the code only: the art's
+  data block counts as one line, however long it is.
 
 | Option | Meaning |
 | --- | --- |
@@ -167,7 +185,8 @@ Animated GIF/WebP and multi-page TIFF files use their **first frame**.
 2. The encoded text is split into pieces and hidden in a dictionary with disguised keys.
 3. The decoder for each step is written out as a disguised lambda, in reverse order, and
    wired together with a randomly chosen pipeline style.
-4. Decoy lines pad the function to a random length between 30 and 38 lines.
+4. Decoy lines pad the function to a random length within the line budget (30–40 by
+   default).
 5. The program is executed in-process; if it does not print exactly the input, it is
    discarded and rebuilt.
 
@@ -177,7 +196,7 @@ Animated GIF/WebP and multi-page TIFF files use their **first frame**.
 python -m unittest discover -s tests
 ```
 
-The suite (34 tests) covers correctness across many seeds and tricky strings, the 40-line
-limit, randomness, every byte transform, image formats and bit depths, transparency, EXIF
+The suite (39 tests) covers correctness across many seeds and tricky strings, the line
+budget (default range, custom and exact budgets, impossible budgets), randomness, every byte transform, image formats and bit depths, transparency, EXIF
 rotation, large and blank images, error messages, and the command line. Tests that need an
 optional codec or package are skipped when it is not installed.

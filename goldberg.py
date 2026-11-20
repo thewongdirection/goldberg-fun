@@ -20,12 +20,14 @@ Usage:
     python goldberg.py "Hello" -o challenge.py   # code to a file
     echo "Hello" | python goldberg.py -          # text from stdin
     python goldberg.py "Hello" --seed 42         # reproducible output
+    python goldberg.py "Hello" -n 60 --variation 0   # exactly 60 lines
     python goldberg.py --image cat.png -w 60     # print an image as ASCII art
     python goldberg.py -i logo.png -w 200        # wider = more detail (shape-matched ASCII)
     python goldberg.py -i logo.png -m braille    # Unicode braille dots instead
 
-In image mode the 40-line cap applies to the code only; the (compressed,
-encoded) art data block counts as a single line however long it is.
+The generated function is 35 +/- 5 lines long by default; choose your own with
+-n/--lines and --variation. In image mode the (compressed, encoded) art data
+block counts as a single line however long it is.
 
 Image mode needs Pillow and numpy; any format Pillow reads works (PNG, JPEG, GIF, BMP,
 TIFF, WebP, ...), plus HEIC/HEIF when the optional pillow-heif package is installed.
@@ -49,9 +51,32 @@ import zlib
 from dataclasses import dataclass, field
 from typing import Callable
 
-MAX_LINES = 40          # hard cap on lines in the generated function body + def
-MIN_LINES = 30          # pad with decoys up to a random target at or above this
-MAX_ATTEMPTS = 60       # re-rolls before giving up on the line cap
+DEFAULT_LINES = 35      # target length of the generated function (def line + body)
+DEFAULT_VARIATION = 5   # each machine lands somewhere in DEFAULT_LINES +/- this
+MAX_ATTEMPTS = 120      # re-rolls before giving up on fitting the line budget
+
+
+def line_range(lines: int = DEFAULT_LINES, variation: int = DEFAULT_VARIATION) -> tuple[int, int]:
+    """The (min, max) function length allowed for a target and a +/- variation."""
+    if lines < 1:
+        raise ValueError("lines must be at least 1")
+    if variation < 0:
+        raise ValueError("variation must be 0 or more")
+    return max(1, lines - variation), lines + variation
+
+
+_FRUGAL_BELOW = 20      # budgets under this many lines skip optional extras
+
+
+def _transform_count(rng: random.Random, max_lines: int) -> int:
+    """How many byte transforms to stack: fewer for tight budgets, more for roomy ones."""
+    if max_lines < 20:
+        return rng.randint(1, 2)
+    if max_lines < 28:
+        return rng.randint(2, 4)
+    if max_lines <= 50:
+        return rng.randint(3, 6)
+    return rng.randint(4, min(12, 6 + (max_lines - 50) // 15))
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +118,7 @@ class NameGen:
 @dataclass
 class Ctx:
     rng: random.Random
+    frugal: bool = False          # tight line budget: skip optional multi-line extras
     name: NameGen = field(init=False)
     blocks: list[list[str]] = field(default_factory=list)   # shuffleable setup blocks
     prelude: list[str] = field(default_factory=list)        # must run first
@@ -103,7 +129,7 @@ class Ctx:
 
     def __post_init__(self) -> None:
         self.name = NameGen(self.rng)
-        if self.rng.random() < 0.45:
+        if not self.frugal and self.rng.random() < 0.45:     # Church numerals: 3 lines
             z, s, u = self.name(), self.name(), self.name()
             f, x, n, k = self.name(), self.name(), self.name(), self.name()
             self.church = (z, s, u)
@@ -557,11 +583,14 @@ def _pipeline(c: Ctx, start: str, gears: list[str]) -> list[str]:
     return [f"{v} = {start}", f"for {g} in ("] + body + ["):", f"{ind}{v} = {g}({v})"]
 
 
-def _build(text: str, rng: random.Random, width: int, data_exempt: bool) -> tuple[str, int]:
-    """Build one machine. Returns (source, counted function lines)."""
-    c = Ctx(rng)
+def _build(text: str, rng: random.Random, width: int, data_exempt: bool,
+           span: tuple[int, int]) -> tuple[str, int]:
+    """Build one machine aiming for a length within span. Returns (source, counted lines)."""
+    c = Ctx(rng, frugal=span[1] < _FRUGAL_BELOW)
     names = list(TRANSFORMS)
-    chosen = rng.sample(names, k=rng.randint(3, 6))
+    k = _transform_count(rng, span[1])
+    # Beyond 17 steps, repeat transforms (each repeat gets its own random keys).
+    chosen = rng.sample(names, k=min(k, len(names))) + rng.choices(names, k=max(0, k - len(names)))
     if not set(chosen) & set(_KEYED):
         chosen[rng.randrange(len(chosen))] = rng.choice(_KEYED)
     if data_exempt and "compress" not in chosen:    # keep big payloads (ASCII art) compact
@@ -578,7 +607,7 @@ def _build(text: str, rng: random.Random, width: int, data_exempt: bool) -> tupl
     tail = _pipeline(c, start, gears)
 
     fname = c.name()
-    target = rng.randint(MIN_LINES, MAX_LINES - 2)
+    target = rng.randint(*span)
     exempt = len(c.data_block) - 1 if data_exempt else 0
 
     def count() -> int:
@@ -613,22 +642,28 @@ def run_generated(code: str) -> str:
 
 
 def generate_with_stats(text: str, seed: int | None = None, verify: bool = True,
-                        data_exempt: bool = False) -> tuple[str, int]:
+                        data_exempt: bool = False, lines: int = DEFAULT_LINES,
+                        variation: int = DEFAULT_VARIATION) -> tuple[str, int]:
     """Return (source, counted lines) for a convoluted function that prints `text`.
 
-    With data_exempt, the payload dict counts as one line toward MAX_LINES.
+    The function is lines +/- variation long (def line included). With data_exempt,
+    the payload dict counts as one line, however many lines it really takes.
     """
+    lo, hi = line_range(lines, variation)
     try:
         text.encode("utf-8")
     except UnicodeEncodeError as e:
         raise ValueError(f"text is not valid Unicode (e.g. a lone surrogate at index {e.start})") from e
     rng = random.Random(seed)
     last_err: Exception | None = None
+    shortest: int | None = None
     for attempt in range(MAX_ATTEMPTS):
-        # Text mode: if wrapped data keeps busting the cap, fall back to one-line dicts.
-        width = 100 if data_exempt or attempt < MAX_ATTEMPTS // 2 else 10**9
-        code, n = _build(text, rng, width, data_exempt)
-        if n > MAX_LINES:
+        # Wrap data lines at 100 chars, unless that busts a tight budget: then one line.
+        roomy = data_exempt or (hi >= _FRUGAL_BELOW and attempt < MAX_ATTEMPTS // 2)
+        width = 100 if roomy else 10**9
+        code, n = _build(text, rng, width, data_exempt, (lo, hi))
+        shortest = n if shortest is None else min(shortest, n)
+        if not lo <= n <= hi:
             continue
         if verify:
             try:
@@ -640,13 +675,17 @@ def generate_with_stats(text: str, seed: int | None = None, verify: bool = True,
                 last_err = AssertionError(f"printed {out[:80]!r}...")
                 continue
         return code, n
+    if last_err is None:      # never fit the budget
+        raise ValueError(f"cannot fit a machine into {lo}-{hi} lines; the shortest built was "
+                         f"{shortest} lines. Allow more lines (-n/--lines) or more --variation.")
     raise RuntimeError(f"could not build a valid machine in {MAX_ATTEMPTS} attempts: {last_err}")
 
 
 def generate(text: str, seed: int | None = None, verify: bool = True,
-             data_exempt: bool = False) -> str:
+             data_exempt: bool = False, lines: int = DEFAULT_LINES,
+             variation: int = DEFAULT_VARIATION) -> str:
     """Return Python source for a convoluted function that prints `text`."""
-    return generate_with_stats(text, seed, verify, data_exempt)[0]
+    return generate_with_stats(text, seed, verify, data_exempt, lines, variation)[0]
 
 
 # ---------------------------------------------------------------------------
@@ -911,6 +950,10 @@ def main(argv: list[str] | None = None) -> int:
                          "blocks (2x2 px/char) or braille (2x4 px/char)")
     ap.add_argument("--font", help="monospace .ttf used for shape matching (default: auto)")
     ap.add_argument("--dither", action="store_true", help="dither blocks/braille (good for photos)")
+    ap.add_argument("-n", "--lines", type=int, default=DEFAULT_LINES,
+                    help=f"target length of the generated function (default {DEFAULT_LINES})")
+    ap.add_argument("--variation", type=int, default=DEFAULT_VARIATION,
+                    help=f"allowed +/- around --lines (default {DEFAULT_VARIATION}; 0 = exact)")
     ap.add_argument("-o", "--output", help="write code to this file instead of stdout")
     ap.add_argument("--seed", type=int, help="seed for reproducible output")
     ap.add_argument("--no-verify", action="store_true", help="skip executing the result")
@@ -925,7 +968,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             text = sys.stdin.read().rstrip("\n") if args.text == "-" else args.text
         code = generate(text, seed=args.seed, verify=not args.no_verify,
-                        data_exempt=bool(args.image))
+                        data_exempt=bool(args.image), lines=args.lines, variation=args.variation)
     except ValueError as e:
         ap.error(str(e))
     if args.output:

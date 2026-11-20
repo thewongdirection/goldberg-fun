@@ -31,13 +31,60 @@ class TestGoldberg(unittest.TestCase):
                     code = goldberg.generate(text, seed=seed, verify=False)
                     self.assertEqual(goldberg.run_generated(code), text + "\n")
 
-    def test_line_cap(self):
+    def test_default_length_is_35_plus_minus_5(self):
+        self.assertEqual(goldberg.line_range(), (30, 40))
+        seen = set()
         for text in SAMPLES:
             for seed in SEEDS:
                 with self.subTest(text=text[:20], seed=seed):
-                    n = goldberg.function_lines(goldberg.generate(text, seed=seed))
-                    self.assertLessEqual(n, goldberg.MAX_LINES)
-                    self.assertGreaterEqual(n, goldberg.MIN_LINES)
+                    code, n = goldberg.generate_with_stats(text, seed=seed)
+                    self.assertEqual(n, goldberg.function_lines(code))   # count is honest
+                    self.assertTrue(30 <= n <= 40, n)
+                    seen.add(n)
+        self.assertGreater(len(seen), 4, "lengths should vary within the range")
+
+    def test_custom_line_budgets(self):
+        text = SAMPLES[0]
+        for lines, variation in [(12, 0), (20, 0), (25, 3), (60, 0), (150, 10)]:
+            lo, hi = goldberg.line_range(lines, variation)
+            for seed in range(8):
+                with self.subTest(lines=lines, variation=variation, seed=seed):
+                    code, n = goldberg.generate_with_stats(text, seed=seed, lines=lines,
+                                                           variation=variation)
+                    self.assertTrue(lo <= n <= hi, n)
+                    self.assertEqual(goldberg.function_lines(code), n)
+                    self.assertEqual(goldberg.run_generated(code), text + "\n")
+
+    def test_long_budgets_stack_more_transforms(self):
+        import random
+        counts = [goldberg._transform_count(random.Random(i), 200) for i in range(50)]
+        self.assertGreater(max(counts), 6)
+        tight = [goldberg._transform_count(random.Random(i), 15) for i in range(50)]
+        self.assertLessEqual(max(tight), 2)
+
+    def test_impossible_budget_is_explained(self):
+        with self.assertRaises(ValueError) as cm:
+            goldberg.generate(SAMPLES[0], seed=1, lines=5, variation=0)
+        self.assertIn("cannot fit a machine into 5-5 lines", str(cm.exception))
+
+    def test_invalid_budget_arguments(self):
+        for lines, variation in [(0, 0), (-3, 1), (35, -1)]:
+            with self.subTest(lines=lines, variation=variation), self.assertRaises(ValueError):
+                goldberg.generate("x", lines=lines, variation=variation)
+        self.assertEqual(goldberg.line_range(3, 10), (1, 13))      # floor at 1 line
+
+    def test_cli_line_options(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "c.py")
+            self.assertEqual(goldberg.main(["hi", "-n", "50", "--variation", "0", "-o", out,
+                                            "--seed", "2"]), 0)
+            with open(out, encoding="utf-8") as fh:
+                code = fh.read()
+        self.assertEqual(goldberg.function_lines(code), 50)
+        with self.assertRaises(SystemExit) as cm, contextlib.redirect_stderr(io.StringIO()) as err:
+            goldberg.main(["hi", "-n", "4", "--variation", "0"])
+        self.assertEqual(cm.exception.code, 2)
+        self.assertIn("cannot fit", err.getvalue())
 
     def test_single_function_and_valid_syntax(self):
         tree = ast.parse(goldberg.generate(SAMPLES[0], seed=1))
@@ -95,7 +142,7 @@ class TestGoldberg(unittest.TestCase):
                 self.assertTrue(all(len(r) <= 60 for r in rows))
                 for seed in range(15):
                     code, n = goldberg.generate_with_stats(art, seed=seed, data_exempt=True)
-                    self.assertLessEqual(n, goldberg.MAX_LINES)
+                    self.assertLessEqual(n, goldberg.line_range()[1])
                     self.assertEqual(goldberg.run_generated(code), art + "\n")
 
     def test_image_modes_resolution_and_roundtrip(self):
@@ -116,8 +163,9 @@ class TestGoldberg(unittest.TestCase):
                         art = goldberg.image_to_ascii(path, width=40, mode=mode, dither=dither)
                         rows = art.split("\n")
                         self.assertTrue(all(len(r) <= 40 for r in rows))
-                        code, n = goldberg.generate_with_stats(art, seed=3, data_exempt=True)
-                        self.assertLessEqual(n, goldberg.MAX_LINES)
+                        code, n = goldberg.generate_with_stats(art, seed=3, data_exempt=True,
+                                                               lines=20, variation=2)
+                        self.assertTrue(18 <= n <= 22, n)
                         self.assertEqual(goldberg.run_generated(code), art + "\n")
             # 20 stripes in 40 chars: braille/blocks have 2 px per char, so each
             # stripe gets 2 pixels -> both on and off dots must appear in a row.
