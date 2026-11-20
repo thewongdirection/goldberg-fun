@@ -163,6 +163,39 @@ class TestGoldberg(unittest.TestCase):
         out = goldberg._render_shape(im, len(word), None)
         self.assertEqual(out, [word])
 
+    def test_invalid_unicode_text_is_rejected_cleanly(self):
+        with self.assertRaises(ValueError) as cm:
+            goldberg.generate("bad \ud800 surrogate", seed=1)
+        self.assertIn("not valid Unicode", str(cm.exception))
+
+    def test_y_combinator_reverse_has_stack_headroom(self):
+        """The recursive reversal must survive being called from deep inside other code."""
+        import random
+        data = bytes(range(goldberg._Y_MAX_BYTES - 1))
+        for seed in range(200):                  # find a build that picks the Y variant
+            c = goldberg.Ctx(random.Random(seed))
+            enc, dec = goldberg.t_reverse(c, data)
+            if c._y and c._y in dec:
+                break
+        else:
+            self.fail("Y-combinator variant never chosen")
+        ns: dict = {}
+        exec("\n".join(c.prelude), ns)  # noqa: S102
+        fn = eval(dec, ns)  # noqa: S307
+
+        def deep(n):
+            return deep(n - 1) if n else fn(enc)
+        self.assertEqual(deep(600), data)
+
+    def test_cli_stdin_and_non_utf8_console(self):
+        script = os.path.join(os.path.dirname(__file__), "..", "goldberg.py")
+        env = {**os.environ, "PYTHONIOENCODING": "ascii"}      # e.g. a legacy Windows console
+        res = subprocess.run([sys.executable, script, "-", "--seed", "3"], input=b"stdin text\n",
+                             capture_output=True, env=env)
+        self.assertEqual(res.returncode, 0, res.stderr.decode(errors="replace"))
+        out = goldberg.run_generated(res.stdout.decode("utf-8"))
+        self.assertEqual(out, "stdin text\n")
+
     def test_cli_requires_exactly_one_input(self):
         for argv in (["hi", "--image", "x.png"], []):
             with self.subTest(argv=argv), self.assertRaises(SystemExit), \

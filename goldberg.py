@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """goldberg.py - turn a string into a Rube Goldberg Python function that prints it.
 
+Given a string (or an image, rendered as ASCII art), build a deliberately absurd,
+randomly constructed Python function whose only job is to print it.
+
 Every run picks a fresh random combination of:
   * byte transforms   (ciphers, permutations, bit tricks, compression, ...)
   * a text encoding   (base85/64/32/16, big integers, rot13-over-base64, ...)
@@ -23,6 +26,10 @@ Usage:
 
 In image mode the 40-line cap applies to the code only; the (compressed,
 encoded) art data block counts as a single line however long it is.
+
+Image mode needs Pillow and numpy; any format Pillow reads works (PNG, JPEG, GIF, BMP,
+TIFF, WebP, ...), plus HEIC/HEIF when the optional pillow-heif package is installed.
+See README.md for options and limitations.
 """
 from __future__ import annotations
 
@@ -354,6 +361,9 @@ def t_xorchain(c: Ctx, data: bytes) -> tuple[bytes, str]:
     return bytes(out), f"lambda {b}: bytes({x} ^ {y} for {x}, {y} in zip({b}, bytes({c.num(1)}) + {b}))"
 
 
+_Y_MAX_BYTES = 120
+
+
 def t_reverse(c: Ctx, data: bytes) -> tuple[bytes, str]:
     b, a, x, rr = c.name(), c.name(), c.name(), c.name()
     opts = [
@@ -361,7 +371,7 @@ def t_reverse(c: Ctx, data: bytes) -> tuple[bytes, str]:
         f"lambda {b}: bytes(reversed({b}))",
         f"lambda {b}: {c.attr(c.mod('functools'), 'reduce')}(lambda {a}, {x}: bytes(({x},)) + {a}, {b}, b'')",
     ]
-    if len(data) < 300:   # recursion depth
+    if len(data) < _Y_MAX_BYTES:   # ~3 stack frames per byte: keep well under the limit
         y = c.y_combinator()
         opts.append(f"{y}(lambda {rr}: lambda {b}, {a}=b'': {a} if not {b} else {rr}({b}[1:], {b}[:1] + {a}))")
     return data[::-1], c.rng.choice(opts)
@@ -608,6 +618,10 @@ def generate_with_stats(text: str, seed: int | None = None, verify: bool = True,
 
     With data_exempt, the payload dict counts as one line toward MAX_LINES.
     """
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError as e:
+        raise ValueError(f"text is not valid Unicode (e.g. a lone surrogate at index {e.start})") from e
     rng = random.Random(seed)
     last_err: Exception | None = None
     for attempt in range(MAX_ATTEMPTS):
@@ -647,22 +661,69 @@ _BRAILLE_BITS = ((0x01, 0x08), (0x02, 0x10), (0x04, 0x20), (0x40, 0x80))
 _BRAILLE_BLANK = "\u2800"
 # Default widths: higher-resolution modes pack more pixels per char, so go wider.
 DEFAULT_WIDTH = {"shape": 180, "ascii": 80, "blocks": 120, "braille": 160}
+MAX_WIDTH = 1000         # beyond this, art is unwieldy and rendering gets slow
 _ADAPTIVE_SLACK = 0.15   # "on" if >15% brighter than the local mean...
 _ADAPTIVE_FLOOR = 40     # ...and not just dark noise
 
 
-def _load_gray(path: str, invert: bool):
-    """Open an image as grayscale with the subject bright, background dark, margins trimmed."""
+MAX_SOURCE_SIDE = 4096   # larger images are downscaled on load (output is far smaller anyway)
+
+
+def _register_optional_formats() -> None:
+    """Enable HEIC/HEIF (e.g. iPhone photos) when the optional pillow-heif is installed."""
     try:
-        from PIL import Image, ImageOps
+        import pillow_heif
+    except ImportError:
+        return
+    pillow_heif.register_heif_opener()
+
+
+def _to_gray(im):
+    """Any Pillow mode -> 8-bit grayscale, transparency flattened onto black."""
+    from PIL import Image
+    if im.mode in ("I", "F") or im.mode.startswith("I;16"):
+        # High bit depth (16-bit PNG/TIFF, float TIFF): converting straight to "L"
+        # clips everything above 255, so stretch the actual range into 0..255 first.
+        im = im.convert("F")
+        lo, hi = im.getextrema()
+        scale = 255.0 / (hi - lo) if hi > lo else 0.0
+        return im.point(lambda v: (v - lo) * scale).convert("L")
+    if im.mode in ("RGBA", "LA", "PA", "RGBa", "La") or \
+            (im.mode == "P" and "transparency" in im.info):
+        im = im.convert("RGBA")
+        im = Image.alpha_composite(Image.new("RGBA", im.size, (0, 0, 0, 255)), im)
+    return im.convert("L")
+
+
+def _load_gray(path: str, invert: bool):
+    """Open an image as grayscale with the subject bright, background dark, margins trimmed.
+
+    Accepts any format Pillow reads (PNG, JPEG, GIF, BMP, TIFF, WebP, AVIF, ICO, ...);
+    multi-frame files (animated GIF/WebP, multi-page TIFF) use their first frame.
+    """
+    try:
+        from PIL import Image, ImageOps, UnidentifiedImageError
     except ImportError as e:  # pragma: no cover
         raise SystemExit("image mode needs Pillow: pip install pillow") from e
-    with Image.open(path) as im:
-        im = ImageOps.exif_transpose(im)
-        if im.mode in ("RGBA", "LA", "P"):          # flatten transparency onto black
-            im = im.convert("RGBA")
-            im = Image.alpha_composite(Image.new("RGBA", im.size, (0, 0, 0, 255)), im)
-        gray = im.convert("L")
+    _register_optional_formats()
+    try:
+        with Image.open(path) as im:
+            im.draft("RGB", (MAX_SOURCE_SIDE, MAX_SOURCE_SIDE))  # fast JPEG downscale
+            im = ImageOps.exif_transpose(im)
+            if max(im.size) > MAX_SOURCE_SIDE:
+                im.thumbnail((MAX_SOURCE_SIDE, MAX_SOURCE_SIDE), Image.Resampling.LANCZOS)
+            gray = _to_gray(im)
+    except FileNotFoundError as e:
+        raise SystemExit(f"image not found: {path}") from e
+    except UnidentifiedImageError as e:
+        hint = (" SVG is a vector format: export it to PNG first." if str(path).lower().endswith(".svg")
+                else " HEIC/HEIF needs: pip install pillow-heif."
+                if str(path).lower().endswith((".heic", ".heif")) else "")
+        raise SystemExit(f"cannot read {path!r} as an image.{hint}") from e
+    except Image.DecompressionBombError as e:
+        raise SystemExit(f"{path!r} is too large to open safely ({e}). Downscale it first.") from e
+    except OSError as e:   # truncated / corrupt files
+        raise SystemExit(f"could not decode {path!r}: {e}") from e
     # Auto-orient: the border (background) should render as blank.
     w, h = gray.size
     border = [gray.getpixel((x, y)) for x in range(0, w, max(1, w // 50)) for y in (0, h - 1)]
@@ -735,6 +796,7 @@ def _render_cells(gray, width: int, cw: int, ch: int, dither: bool, glyph) -> li
 # Shape matching: every cell is compared with rendered glyphs of a monospace font.
 _SHAPE_CELL_H = 24       # template cell height in px (width follows the font's aspect)
 _SHAPE_BLUR = 1.5        # blur on glyphs and image: tolerates small misalignments
+_SHAPE_BAND_CELLS = 20_000   # cells matched per batch (~25 MB of floats)
 _FONT_CANDIDATES = (
     "DejaVuSansMono.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
     "/System/Library/Fonts/Menlo.ttc", "/System/Library/Fonts/Monaco.ttf",
@@ -750,9 +812,9 @@ def _mono_font(font_path: str | None, cell_h: int):
     for cand in ([font_path] if font_path else list(_FONT_CANDIDATES)):
         try:
             probe = ImageFont.truetype(cand, 100)
-        except OSError:
+        except OSError as e:
             if font_path:
-                raise
+                raise SystemExit(f"cannot load font {font_path!r}: {e}") from e
             continue
         a, d = probe.getmetrics()
         font = ImageFont.truetype(cand, max(6, int(100 * cell_h / (a + d))))
@@ -779,13 +841,21 @@ def _render_shape(gray, width: int, font_path: str | None) -> list[str]:
         glyphs.append(np.asarray(im.filter(ImageFilter.GaussianBlur(_SHAPE_BLUR)), np.float32))
     tmpl = np.stack(glyphs).reshape(len(chars), -1) / 255
 
+    norms = (tmpl * tmpl).sum(1)[None, :]
+
     rows = max(1, round(gray.height / gray.width * width * cw / ch))
     img = gray.resize((width * cw, rows * ch), Image.Resampling.LANCZOS)
-    img = np.asarray(img.filter(ImageFilter.GaussianBlur(_SHAPE_BLUR)), np.float32) / 255
-    cells = img.reshape(rows, ch, width, cw).transpose(0, 2, 1, 3).reshape(rows * width, -1)
-    # argmin ||cell - glyph||^2 == argmin (|glyph|^2 - 2 cell.glyph); one matrix multiply.
-    best = ((tmpl * tmpl).sum(1)[None, :] - 2 * cells @ tmpl.T).argmin(1).reshape(rows, width)
-    return ["".join(chars[i] for i in r) for r in best]
+    img = img.filter(ImageFilter.GaussianBlur(_SHAPE_BLUR))
+    out = []
+    band = max(1, _SHAPE_BAND_CELLS // width)          # text rows per band: bounds memory
+    for r0 in range(0, rows, band):
+        n = min(band, rows - r0)
+        part = np.asarray(img.crop((0, r0 * ch, width * cw, (r0 + n) * ch)), np.float32) / 255
+        cells = part.reshape(n, ch, width, cw).transpose(0, 2, 1, 3).reshape(n * width, -1)
+        # argmin ||cell - glyph||^2 == argmin (|glyph|^2 - 2 cell.glyph): one matrix multiply.
+        best = (norms - 2 * cells @ tmpl.T).argmin(1).reshape(n, width)
+        out += ["".join(chars[i] for i in r) for r in best]
+    return out
 
 
 def _quadrant(cell) -> str:
@@ -811,8 +881,10 @@ def image_to_ascii(path: str, width: int | None = None, ramp: str = DEFAULT_RAMP
     if mode not in IMAGE_MODES:
         raise ValueError(f"mode must be one of {IMAGE_MODES}")
     width = DEFAULT_WIDTH[mode] if width is None else width
-    if width < 1 or len(ramp) < 2:
-        raise ValueError("width must be >= 1 and ramp needs at least 2 characters")
+    if not 1 <= width <= MAX_WIDTH:
+        raise ValueError(f"width must be between 1 and {MAX_WIDTH}")
+    if len(ramp) < 2:
+        raise ValueError("ramp needs at least 2 characters")
     gray = _load_gray(path, invert)
     if mode == "shape":
         rows, blank = _render_shape(gray, width, font), " "
@@ -846,16 +918,23 @@ def main(argv: list[str] | None = None) -> int:
     if (args.text is None) == (args.image is None):
         ap.error("give exactly one of TEXT or --image")
 
-    if args.image:
-        text = image_to_ascii(args.image, args.width, args.ramp, args.invert, args.mode, args.dither,
-                              args.font)
-    else:
-        text = sys.stdin.read().rstrip("\n") if args.text == "-" else args.text
-    code = generate(text, seed=args.seed, verify=not args.no_verify, data_exempt=bool(args.image))
+    try:
+        if args.image:
+            text = image_to_ascii(args.image, args.width, args.ramp, args.invert, args.mode,
+                                  args.dither, args.font)
+        else:
+            text = sys.stdin.read().rstrip("\n") if args.text == "-" else args.text
+        code = generate(text, seed=args.seed, verify=not args.no_verify,
+                        data_exempt=bool(args.image))
+    except ValueError as e:
+        ap.error(str(e))
     if args.output:
         with open(args.output, "w", encoding="utf-8") as fh:
             fh.write(code)
     else:
+        # Generated identifiers are Greek/Cyrillic: don't crash on a non-UTF-8 console.
+        with contextlib.suppress(AttributeError, ValueError):
+            sys.stdout.reconfigure(encoding="utf-8")
         sys.stdout.write(code)
     return 0
 

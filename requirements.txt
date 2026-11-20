@@ -1,4 +1,6 @@
-# Text mode needs only the Python standard library (3.9+).
-# Image mode:
+# Text mode needs only the Python standard library (Python 3.9+).
+# Image mode (-i/--image):
 pillow>=10.1
 numpy>=1.22
+# Optional: HEIC/HEIF images (e.g. iPhone photos)
+# pillow-heif>=0.16
