@@ -72,6 +72,8 @@ class TestGoldberg(unittest.TestCase):
             with self.subTest(lines=lines, variation=variation), self.assertRaises(ValueError):
                 goldberg.generate("x", lines=lines, variation=variation)
         self.assertEqual(goldberg.line_range(3, 10), (1, 13))      # floor at 1 line
+        with self.assertRaises(ValueError):
+            goldberg.line_range(goldberg.MAX_LINES_LIMIT, 1)      # runaway budgets refused
 
     def test_cli_line_options(self):
         with tempfile.TemporaryDirectory() as d:

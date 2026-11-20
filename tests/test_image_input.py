@@ -176,6 +176,26 @@ class TestImageInput(unittest.TestCase):
         self.assertLessEqual(max(gray.size), goldberg.MAX_SOURCE_SIDE)
         self.assertGreater(sum(ch != " " for ch in self._render(path)), 100)
 
+    def test_tall_images_are_capped_in_rows(self):
+        """A tall strip at a large width must not explode into thousands of rows."""
+        tall = Image.new("RGB", (300, 2000), "white")
+        ImageDraw.Draw(tall).rectangle((50, 50, 250, 1900), fill="black")
+        path = self._save("tall.png", lambda p: tall.save(p))
+        for mode in goldberg.IMAGE_MODES:
+            with self.subTest(mode=mode):
+                rows = goldberg.image_to_ascii(path, width=goldberg.MAX_WIDTH, mode=mode).split("\n")
+                self.assertLessEqual(len(rows), goldberg.MAX_ROWS)
+                self.assertGreater(len(rows), goldberg.MAX_ROWS * 0.9)   # uses the room it has
+                width = max(map(len, rows))
+                self.assertLess(width, 200)                              # narrowed to keep shape
+                self.assertGreater(width, 60)
+
+    def test_wide_images_keep_requested_width(self):
+        wide = self._save("wide.png", lambda p: self.ref.resize((2000, 300)).save(p))
+        rows = goldberg.image_to_ascii(wide, width=300).split("\n")
+        self.assertLessEqual(len(rows), goldberg.MAX_ROWS)
+        self.assertGreater(max(map(len, rows)), 250)
+
     def test_tiny_and_blank_images(self):
         tiny = self._save("tiny.png", lambda p: Image.new("RGB", (1, 1), "black").save(p))
         self.assertIsInstance(self._render(tiny), str)

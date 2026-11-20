@@ -90,7 +90,7 @@ python goldberg.py "Welcome" -n 150 --variation 25 # anywhere from 125 to 175 li
 | Option | Meaning |
 | --- | --- |
 | `-n N`, `--lines N` | Target length of the generated function, counting the `def` line. Default **35**. |
-| `--variation V` | How far each machine may land from the target: anywhere in N−V to N+V. Default **5**; `0` means exactly N lines. |
+| `--variation V` | How far each machine may land from the target: anywhere in N−V to N+V. Default **5**; `0` means exactly N lines. N+V may be at most 10,000. |
 
 Every program is checked against this range before it is returned. Small budgets get fewer
 scrambling steps; large ones get more steps (up to 12) and more decoys. The practical
@@ -127,7 +127,7 @@ How the conversion works:
 | Option | Meaning |
 | --- | --- |
 | `-i FILE`, `--image FILE` | Reference image to turn into ASCII art. |
-| `-w N`, `--width N` | Art width in characters, 1–1000. Defaults: shape 180, ascii 80, blocks 120, braille 160. |
+| `-w N`, `--width N` | Art width in characters, 1–1000. Defaults: shape 180, ascii 80, blocks 120, braille 160. Art is at most 500 rows tall: tall images are narrowed to fit, keeping their shape. |
 | `-m shape` *(default)* | Plain ASCII chosen by shape matching. Sharpest; best for logos and text. |
 | `-m ascii` | Classic brightness ramp, one shade per character (`--ramp " .:-=+*#%@"`). |
 | `-m blocks` | Unicode quadrant blocks (`▘▝▀▖▌...`), 2×2 pixels per character. |
@@ -154,8 +154,9 @@ Animated GIF/WebP and multi-page TIFF files use their **first frame**.
 ## Limitations
 
 - **Very high resolution or highly detailed images.** The art is at most 1000 characters
-  wide, and by default 180, so an image is effectively reduced to roughly 180×100
-  "pixels" of character shapes. Fine detail (thin lines, small print, textures, faces in a
+  wide and 500 rows tall, and by default 180 wide, so an image is effectively reduced to
+  roughly 180×100 "pixels" of character shapes. Tall images (e.g. long screenshots) are
+  narrowed to stay within 500 rows. Fine detail (thin lines, small print, textures, faces in a
   crowd) is lost or turns to noise; bold, high-contrast subjects such as logos, icons and
   large lettering work best. Very large files are downscaled to 4096 px on the longest side
   as they load, and images over about 178 megapixels are refused by Pillow's built-in
@@ -174,7 +175,9 @@ Animated GIF/WebP and multi-page TIFF files use their **first frame**.
   and look poor (misaligned, faint) in some viewers and in the legacy Windows console;
   `shape` and `ascii` use plain ASCII and display everywhere.
 - **Speed and size.** Image puzzles carry the whole art as compressed data, typically a few
-  KB to tens of KB. Generation takes a second or two; widths near 1000 take longer.
+  KB to tens of KB. Generation takes a second or two; widths near 1000 take longer. Very
+  long programs are slow to build too: about 2 s for 2,000 lines and 15 s for 10,000 (the
+  maximum).
 - **Not real security.** The scrambling is designed to be fun to unravel, not to keep a
   secret: running the program reveals the text. Don't use it to hide anything sensitive.
 
@@ -196,7 +199,7 @@ Animated GIF/WebP and multi-page TIFF files use their **first frame**.
 python -m unittest discover -s tests
 ```
 
-The suite (39 tests) covers correctness across many seeds and tricky strings, the line
+The suite (41 tests) covers correctness across many seeds and tricky strings, the line
 budget (default range, custom and exact budgets, impossible budgets), randomness, every byte transform, image formats and bit depths, transparency, EXIF
 rotation, large and blank images, error messages, and the command line. Tests that need an
 optional codec or package are skipped when it is not installed.

@@ -54,6 +54,7 @@ from typing import Callable
 DEFAULT_LINES = 35      # target length of the generated function (def line + body)
 DEFAULT_VARIATION = 5   # each machine lands somewhere in DEFAULT_LINES +/- this
 MAX_ATTEMPTS = 120      # re-rolls before giving up on fitting the line budget
+MAX_LINES_LIMIT = 10_000  # largest budget accepted (10k lines already takes ~15 s)
 
 
 def line_range(lines: int = DEFAULT_LINES, variation: int = DEFAULT_VARIATION) -> tuple[int, int]:
@@ -62,6 +63,8 @@ def line_range(lines: int = DEFAULT_LINES, variation: int = DEFAULT_VARIATION) -
         raise ValueError("lines must be at least 1")
     if variation < 0:
         raise ValueError("variation must be 0 or more")
+    if lines + variation > MAX_LINES_LIMIT:
+        raise ValueError(f"lines + variation must be at most {MAX_LINES_LIMIT}")
     return max(1, lines - variation), lines + variation
 
 
@@ -701,6 +704,7 @@ _BRAILLE_BLANK = "\u2800"
 # Default widths: higher-resolution modes pack more pixels per char, so go wider.
 DEFAULT_WIDTH = {"shape": 180, "ascii": 80, "blocks": 120, "braille": 160}
 MAX_WIDTH = 1000         # beyond this, art is unwieldy and rendering gets slow
+MAX_ROWS = 500           # tall images are narrowed so the art stays at most this tall
 _ADAPTIVE_SLACK = 0.15   # "on" if >15% brighter than the local mean...
 _ADAPTIVE_FLOOR = 40     # ...and not just dark noise
 
@@ -816,9 +820,23 @@ def _bitmap(gray, px_w: int, px_h: int, dither: bool) -> list[list[bool]]:
     return [[px[x, y] > 0 for x in range(px_w)] for y in range(px_h)]
 
 
+def _fit(gray, width: int, cell_aspect: float) -> tuple[int, int]:
+    """(width, rows) of the art for this image; cell_aspect = cell width / height.
+
+    Rows follow the image's aspect ratio. A tall image that would need more than
+    MAX_ROWS rows is narrowed (keeping its shape), bounding time and memory.
+    """
+    ratio = gray.height / gray.width * cell_aspect
+    rows = max(1, round(ratio * width))
+    if rows > MAX_ROWS:
+        width = max(1, round(MAX_ROWS / ratio))
+        rows = min(MAX_ROWS, max(1, round(ratio * width)))
+    return width, rows
+
+
 def _render_ascii(gray, width: int, ramp: str) -> list[str]:
     from PIL import Image, ImageFilter
-    height = max(1, round(gray.height / gray.width * width * 0.5))   # cells ~2x tall
+    width, height = _fit(gray, width, 0.5)                          # cells ~2x tall
     small = gray.resize((width, height), Image.Resampling.LANCZOS)
     small = small.filter(ImageFilter.UnsharpMask(radius=1, percent=120, threshold=2))
     scale, px = (len(ramp) - 1) / 255, small.load()
@@ -827,7 +845,7 @@ def _render_ascii(gray, width: int, ramp: str) -> list[str]:
 
 def _render_cells(gray, width: int, cw: int, ch: int, dither: bool, glyph) -> list[str]:
     """Render with cw x ch pixels per character; glyph(cell_bits) -> str."""
-    rows = max(1, round(gray.height / gray.width * width * 0.5))   # cells ~2x tall
+    width, rows = _fit(gray, width, 0.5)                          # cells ~2x tall
     bm = _bitmap(gray, width * cw, rows * ch, dither)
     return ["".join(glyph([[bm[r * ch + dy][c * cw + dx] for dx in range(cw)] for dy in range(ch)])
                     for c in range(width)) for r in range(rows)]
@@ -882,7 +900,7 @@ def _render_shape(gray, width: int, font_path: str | None) -> list[str]:
 
     norms = (tmpl * tmpl).sum(1)[None, :]
 
-    rows = max(1, round(gray.height / gray.width * width * cw / ch))
+    width, rows = _fit(gray, width, cw / ch)
     img = gray.resize((width * cw, rows * ch), Image.Resampling.LANCZOS)
     img = img.filter(ImageFilter.GaussianBlur(_SHAPE_BLUR))
     out = []
