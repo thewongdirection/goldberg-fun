@@ -23,6 +23,7 @@ Usage:
     python goldberg.py "Hello" -n 60 --variation 0   # exactly 60 lines
     python goldberg.py --image cat.png -w 60     # print an image as ASCII art
     python goldberg.py -i logo.png -w 200        # wider = more detail (shape-matched ASCII)
+    python goldberg.py -i photo.jpg              # photos: auto-picks ascii + long ramp
     python goldberg.py -i logo.png -m braille    # Unicode braille dots instead
 
 The generated function is 35 +/- 5 lines long by default; choose your own with
@@ -694,8 +695,13 @@ def generate(text: str, seed: int | None = None, verify: bool = True,
 # ---------------------------------------------------------------------------
 # Image -> text art.
 # ---------------------------------------------------------------------------
-DEFAULT_RAMP = " .:-=+*#%@"   # dark -> bright (suits dark terminal backgrounds)
-IMAGE_MODES = ("shape", "ascii", "blocks", "braille")
+# Brightness ramps for the ascii style, dark -> bright (suits dark terminal backgrounds).
+RAMPS = {
+    "short": " .:-=+*#%@",                                                 # bold, high contrast
+    "long": " .'`^\",:;Il!i><~+_-?][}{1)(|/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$",  # photos
+}
+DEFAULT_RAMP = RAMPS["short"]
+IMAGE_MODES = ("auto", "shape", "ascii", "blocks", "braille")
 # Quadrant glyphs indexed by bits: 1=top-left, 2=top-right, 4=bottom-left, 8=bottom-right.
 _QUADRANTS = " ▘▝▀▖▌▞▛▗▚▐▜▄▙▟█"
 # Braille dot bit for each (x, y) in the 2x4 cell.
@@ -703,6 +709,12 @@ _BRAILLE_BITS = ((0x01, 0x08), (0x02, 0x10), (0x04, 0x20), (0x40, 0x80))
 _BRAILLE_BLANK = "\u2800"
 # Default widths: higher-resolution modes pack more pixels per char, so go wider.
 DEFAULT_WIDTH = {"shape": 180, "ascii": 80, "blocks": 120, "braille": 160}
+PHOTO_WIDTH = 140        # auto mode, photo-like images: ascii style with the long ramp
+# Auto mode calls an image logo-like when its border is mostly one tone (a clear
+# background) that also covers a good share of the picture; otherwise photo-like.
+_LOGO_BORDER_UNIFORMITY = 0.75
+_LOGO_BACKGROUND_SHARE = 0.30
+_TONE_TOLERANCE = 16
 MAX_WIDTH = 1000         # beyond this, art is unwieldy and rendering gets slow
 MAX_ROWS = 500           # tall images are narrowed so the art stays at most this tall
 _ADAPTIVE_SLACK = 0.15   # "on" if >15% brighter than the local mean...
@@ -752,7 +764,12 @@ def _to_gray(im):
 
 
 def _load_gray(path: str, invert: bool):
-    """Open an image as grayscale with the subject bright, background dark, margins trimmed.
+    """Open an image as grayscale with the subject bright, background dark, margins trimmed."""
+    return _prepare_gray(_read_gray(path), invert)
+
+
+def _read_gray(path: str):
+    """Open any image as 8-bit grayscale, upright and size-limited, but otherwise untouched.
 
     Accepts any format Pillow reads (PNG, JPEG, GIF, BMP, TIFF, WebP, AVIF, ICO, ...);
     multi-frame files (animated GIF/WebP, multi-page TIFF) use their first frame.
@@ -780,6 +797,12 @@ def _load_gray(path: str, invert: bool):
         raise SystemExit(f"{path!r} is too large to open safely ({e}). Downscale it first.") from e
     except OSError as e:   # truncated / corrupt files
         raise SystemExit(f"could not decode {path!r}: {e}") from e
+    return gray
+
+
+def _prepare_gray(gray, invert: bool):
+    """Subject bright, background dark (blank in the art), contrast stretched, margins trimmed."""
+    from PIL import ImageOps
     # Auto-orient: the border (background) should render as blank.
     w, h = gray.size
     border = [gray.getpixel((x, y)) for x in range(0, w, max(1, w // 50)) for y in (0, h - 1)]
@@ -791,6 +814,32 @@ def _load_gray(path: str, invert: bool):
     gray = ImageOps.autocontrast(gray)
     bbox = gray.point(lambda v: 255 if v > 24 else 0).getbbox()   # trim empty margins
     return gray.crop(bbox) if bbox else gray
+
+
+def _classify_gray(gray) -> str:
+    """'logo' if the image has a clear, uniform background; otherwise 'photo'."""
+    small = gray.copy()
+    small.thumbnail((256, 256))
+    w, h = small.size
+    px = small.load()
+    border = [px[x, y] for x in range(w) for y in (0, h - 1)] + \
+             [px[x, y] for y in range(h) for x in (0, w - 1)]
+    bg = sorted(border)[len(border) // 2]
+    near = lambda v: abs(v - bg) <= _TONE_TOLERANCE  # noqa: E731
+    uniformity = sum(map(near, border)) / len(border)
+    share = sum(c for v, c in enumerate(small.histogram()) if near(v)) / (w * h)
+    logo = uniformity >= _LOGO_BORDER_UNIFORMITY and share >= _LOGO_BACKGROUND_SHARE
+    return "logo" if logo else "photo"
+
+
+def classify_image(path: str) -> str:
+    """'logo' (clear background: suits the shape style) or 'photo' (suits ascii, long ramp)."""
+    return _classify_gray(_read_gray(path))
+
+
+def resolve_ramp(ramp: str | None) -> str | None:
+    """A preset name ('short', 'long') -> its characters; anything else is used as given."""
+    return RAMPS.get(ramp, ramp) if ramp is not None else None
 
 
 def _otsu(gray) -> int:
@@ -937,25 +986,38 @@ def _braille(cell) -> str:
     return chr(0x2800 + sum(_BRAILLE_BITS[y][x] for y in range(4) for x in range(2) if cell[y][x]))
 
 
-def image_to_ascii(path: str, width: int | None = None, ramp: str = DEFAULT_RAMP, invert: bool = False,
-                   mode: str = "shape", dither: bool = False, font: str | None = None) -> str:
+def image_to_ascii(path: str, width: int | None = None, ramp: str | None = None, invert: bool = False,
+                   mode: str = "auto", dither: bool = False, font: str | None = None) -> str:
     """Render an image file as text art, `width` characters wide.
 
-    Modes: "shape" (plain ASCII chosen by matching each cell's shape against rendered
+    Modes: "auto" (default: "shape" for logo-like images with a clear background,
+    "ascii" with the long ramp at PHOTO_WIDTH for photos; see classify_image),
+    "shape" (plain ASCII chosen by matching each cell's shape against rendered
     glyphs of a monospace font - sharpest pure-ASCII result, needs numpy),
     "ascii" (1 brightness level per char, from `ramp`), "blocks" (2x2 pixels
     per char, Unicode quadrants) or "braille" (2x4 pixels per char, Unicode braille).
     `dither` uses Floyd-Steinberg for blocks/braille (best for photos); otherwise
-    an automatic threshold is used (best for logos and text).
+    an automatic threshold is used (best for logos and text). `ramp` is a preset
+    name from RAMPS ("short", the ascii default; "long") or the characters to use.
     """
     if mode not in IMAGE_MODES:
         raise ValueError(f"mode must be one of {IMAGE_MODES}")
-    width = DEFAULT_WIDTH[mode] if width is None else width
-    if not 1 <= width <= MAX_WIDTH:
+    ramp = resolve_ramp(ramp)
+    if ramp is not None and len(ramp) < 2:
+        raise ValueError("ramp needs at least 2 characters (or a preset: "
+                         f"{', '.join(RAMPS)})")
+    if width is not None and not 1 <= width <= MAX_WIDTH:
         raise ValueError(f"width must be between 1 and {MAX_WIDTH}")
-    if len(ramp) < 2:
-        raise ValueError("ramp needs at least 2 characters")
-    gray = _load_gray(path, invert)
+    raw = _read_gray(path)
+    if mode == "auto":
+        if _classify_gray(raw) == "logo":
+            mode = "shape"
+        else:
+            mode, width = "ascii", PHOTO_WIDTH if width is None else width
+            ramp = RAMPS["long"] if ramp is None else ramp
+    width = DEFAULT_WIDTH[mode] if width is None else width
+    ramp = DEFAULT_RAMP if ramp is None else ramp
+    gray = _prepare_gray(raw, invert)
     if mode == "shape":
         rows, blank = _render_shape(gray, width, font), " "
     elif mode == "ascii":
@@ -973,12 +1035,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("text", nargs="?", help="string to print, or '-' to read stdin")
     ap.add_argument("-i", "--image", help="image file to print as ASCII art instead of text")
     ap.add_argument("-w", "--width", type=int,
-                    help="art width in chars (default: 180 shape, 80 ascii, 120 blocks, 160 braille)")
-    ap.add_argument("--ramp", default=DEFAULT_RAMP, help="characters from dark to bright")
+                    help="art width in chars (default: 180 shape, 140 auto-photo, 80 ascii, "
+                         "120 blocks, 160 braille)")
+    ap.add_argument("--ramp", help="ascii ramp, dark to bright: a preset (short, long) or "
+                                   "your own characters (default: short; long for photos in auto)")
     ap.add_argument("--invert", action="store_true", help="swap which tone counts as background")
-    ap.add_argument("-m", "--mode", choices=IMAGE_MODES, default="shape",
-                    help="shape (default: ASCII matched to glyph shapes), ascii (brightness ramp), "
-                         "blocks (2x2 px/char) or braille (2x4 px/char)")
+    ap.add_argument("-m", "--mode", choices=IMAGE_MODES, default="auto",
+                    help="auto (default: shape for logos, ascii + long ramp for photos), shape "
+                         "(ASCII matched to glyph shapes), ascii (brightness ramp), blocks "
+                         "(2x2 px/char) or braille (2x4 px/char)")
     ap.add_argument("--font", help="monospace .ttf used for shape matching (default: auto)")
     ap.add_argument("--dither", action="store_true", help="dither blocks/braille (good for photos)")
     ap.add_argument("-n", "--lines", type=int, default=DEFAULT_LINES,
@@ -994,6 +1059,10 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if args.image:
+            if args.mode == "auto":
+                kind = classify_image(args.image)
+                style = "shape style" if kind == "logo" else "ascii style, long ramp"
+                print(f"auto: {kind}-like image -> {style} (choose with -m)", file=sys.stderr)
             text = image_to_ascii(args.image, args.width, args.ramp, args.invert, args.mode,
                                   args.dither, args.font)
         else:

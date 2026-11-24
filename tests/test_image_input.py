@@ -210,6 +210,77 @@ class TestImageInput(unittest.TestCase):
                         self.assertLess(max(im.size), max(size))
                         self.assertGreaterEqual(max(im.size), goldberg._JPEG_DRAFT_SIDE)
 
+    # -- auto mode and ramp presets -------------------------------------------
+    def _photo_like(self, name="photo.jpg", seed=1):
+        """Gradient + waves + noise, no clear background: like a landscape photo."""
+        rng = np.random.default_rng(seed)
+        y, x = np.mgrid[0:600, 0:900]
+        a = (np.sin(x / 40) * 40 + y / 600 * 120 + 60 + rng.normal(0, 18, (600, 900)))
+        img = Image.fromarray(a.clip(0, 255).astype(np.uint8))
+        return self._save(name, lambda p: img.save(p, quality=90))
+
+    def _skyline_like(self):
+        """Gradient sky with dark towers reaching the bottom edge."""
+        im = Image.linear_gradient("L").resize((900, 600)).convert("RGB")
+        d = ImageDraw.Draw(im)
+        d.rectangle((200, 250, 350, 599), fill=(20, 20, 20))
+        d.rectangle((500, 150, 600, 599), fill=(40, 40, 40))
+        return self._save("skyline.jpg", lambda p: im.save(p, quality=90))
+
+    def _icon_like(self):
+        im = Image.new("RGBA", (600, 600), (0, 0, 0, 0))
+        ImageDraw.Draw(im).polygon([(300, 20), (580, 580), (20, 580)], fill=(30, 120, 30, 255))
+        return self._save("icon.png", lambda p: im.save(p))
+
+    def test_auto_classifies_logos_and_photos(self):
+        cases = {self.ref_path: "logo", self._icon_like(): "logo",
+                 self._photo_like(): "photo", self._skyline_like(): "photo"}
+        for path, kind in cases.items():
+            with self.subTest(image=os.path.basename(path)):
+                self.assertEqual(goldberg.classify_image(path), kind)
+
+    def test_auto_picks_the_style(self):
+        photo = self._photo_like()
+        self.assertEqual(goldberg.image_to_ascii(photo),
+                         goldberg.image_to_ascii(photo, mode="ascii", ramp="long",
+                                                 width=goldberg.PHOTO_WIDTH))
+        self.assertEqual(goldberg.image_to_ascii(self.ref_path),
+                         goldberg.image_to_ascii(self.ref_path, mode="shape"))
+        # an explicit width or ramp still wins in auto mode
+        self.assertEqual(goldberg.image_to_ascii(photo, width=50, ramp="short"),
+                         goldberg.image_to_ascii(photo, mode="ascii", width=50, ramp="short"))
+        # and an explicit mode is never overridden
+        self.assertEqual(goldberg.image_to_ascii(photo, mode="shape", width=60),
+                         goldberg.image_to_ascii(photo, mode="shape", width=60))
+        self.assertNotEqual(goldberg.image_to_ascii(photo, mode="shape", width=60),
+                            goldberg.image_to_ascii(photo, width=60))
+
+    def test_ramp_presets(self):
+        self.assertEqual(goldberg.resolve_ramp("long"), goldberg.RAMPS["long"])
+        self.assertEqual(goldberg.resolve_ramp("short"), goldberg.DEFAULT_RAMP)
+        self.assertEqual(goldberg.resolve_ramp(" .oO@"), " .oO@")           # literal ramp kept
+        self.assertGreaterEqual(len(goldberg.RAMPS["long"]), 60)
+        self.assertEqual(len(set(goldberg.RAMPS["long"])), len(goldberg.RAMPS["long"]))
+        for name, chars in goldberg.RAMPS.items():
+            with self.subTest(preset=name):
+                self.assertEqual(goldberg.image_to_ascii(self.ref_path, mode="ascii", ramp=name),
+                                 goldberg.image_to_ascii(self.ref_path, mode="ascii", ramp=chars))
+        with self.assertRaises(ValueError) as cm:
+            goldberg.image_to_ascii(self.ref_path, mode="ascii", ramp="x")
+        self.assertIn("preset", str(cm.exception))
+
+    def test_cli_auto_reports_its_choice(self):
+        for path, expected in ((self._photo_like(), "photo-like image -> ascii style, long ramp"),
+                               (self.ref_path, "logo-like image -> shape style")):
+            out = os.path.join(self.dir, "puzzle.py")
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(goldberg.main(["-i", path, "-o", out, "--seed", "1"]), 0)
+            self.assertIn(expected, err.getvalue())
+            with open(out, encoding="utf-8") as fh:
+                code = fh.read()
+            self.assertEqual(goldberg.run_generated(code),
+                             goldberg.image_to_ascii(path) + "\n")
+
     def test_tiny_and_blank_images(self):
         tiny = self._save("tiny.png", lambda p: Image.new("RGB", (1, 1), "black").save(p))
         self.assertIsInstance(self._render(tiny), str)

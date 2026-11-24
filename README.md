@@ -58,7 +58,7 @@ generated function prints that image as ASCII art.
 | --- | --- | --- |
 | **Python 3.9+** | everything | [python.org](https://www.python.org/downloads/) |
 | **Pillow ≥ 10.1** | image mode | `pip install pillow` |
-| **NumPy** | image mode, default `shape` style | `pip install numpy` |
+| **NumPy** | image mode, `shape` style (used for logos) | `pip install numpy` |
 | pillow-heif *(optional)* | HEIC/HEIF photos (e.g. from iPhones) | `pip install pillow-heif` |
 | A monospace TrueType font *(usually already present)* | `shape` style | DejaVu Sans Mono, Menlo, Consolas, Courier New, ... are found automatically |
 
@@ -106,7 +106,8 @@ Supply a reference image with `-i/--image` instead of text. The tool converts th
 ASCII art, then builds a Rube Goldberg program that prints that art.
 
 ```sh
-python goldberg.py -i logo.png -o puzzle.py        # default: 180 characters wide
+python goldberg.py -i logo.png -o puzzle.py        # logo: shape style, 180 wide
+python goldberg.py -i photo.jpg -o puzzle.py       # photo: ascii style, long ramp, 140 wide
 python goldberg.py -i logo.jpg -w 220              # wider = more detail
 python goldberg.py -i photo.jpg -m braille --dither
 ```
@@ -117,19 +118,30 @@ How the conversion works:
   space, whether it is white, black or transparent. Use `--invert` to swap foreground and
   background if the guess is wrong.
 - **Empty margins are trimmed**, so the full width is spent on the subject.
-- In the default **`shape`** style, every character cell of the image is compared with the
-  actual shapes of the 95 printable ASCII characters drawn in a monospace font, and the
-  closest match wins. Edges become `/`, `_`, `(`, `|` and friends, which keeps outlines crisp
-  and small text legible.
+- **The style is picked automatically** (`-m auto`, the default). The tool checks whether
+  the image has a clear background: at least 75% of its border is one tone, and that tone
+  covers at least 30% of the picture.
+  - **Logo-like** images (logos, icons, wordmarks, anything on a plain background) get the
+    **`shape`** style: every character cell is compared with the actual shapes of the 95
+    printable ASCII characters drawn in a monospace font, and the closest match wins. Edges
+    become `/`, `_`, `(`, `|` and friends, which keeps outlines crisp and small text legible.
+  - **Photo-like** images (no clear background: landscapes, cityscapes, portraits) get the
+    **`ascii`** style with the 70-step **`long`** ramp at 140 columns, which keeps the
+    photo's shading instead of forcing it into hard shapes.
+
+  The tool prints which it chose, e.g. `auto: photo-like image -> ascii style, long ramp`.
+  Any explicit `-m`, `-w` or `--ramp` overrides the automatic choice.
 - In image mode the line budget (`-n`, `--variation`) applies to the code only: the art's
   data block counts as one line, however long it is.
 
 | Option | Meaning |
 | --- | --- |
 | `-i FILE`, `--image FILE` | Reference image to turn into ASCII art. |
-| `-w N`, `--width N` | Art width in characters, 1–1000. Defaults: shape 180, ascii 80, blocks 120, braille 160. Art is at most 500 rows tall: tall images are narrowed to fit, keeping their shape. |
-| `-m shape` *(default)* | Plain ASCII chosen by shape matching. Sharpest; best for logos and text. |
-| `-m ascii` | Classic brightness ramp, one shade per character (`--ramp " .:-=+*#%@"`). |
+| `-w N`, `--width N` | Art width in characters, 1–1000. Defaults: shape 180, photos in auto 140, ascii 80, blocks 120, braille 160. Art is at most 500 rows tall: tall images are narrowed to fit, keeping their shape. |
+| `-m auto` *(default)* | `shape` for logo-like images, `ascii` with the `long` ramp for photo-like ones (see above). |
+| `-m shape` | Plain ASCII chosen by shape matching. Sharpest; best for logos and text. |
+| `-m ascii` | Brightness ramp, one shade per character. |
+| `--ramp R` | Ramp for `ascii`, dark to bright: a preset, `short` (`" .:-=+*#%@"`, the default for `-m ascii`) or `long` (70 steps, the default for photos in auto), or your own characters, e.g. `--ramp " .oO@"`. |
 | `-m blocks` | Unicode quadrant blocks (`▘▝▀▖▌...`), 2×2 pixels per character. |
 | `-m braille` | Unicode braille dots, 2×4 pixels per character. |
 | `--font PATH` | Monospace `.ttf`/`.ttc` used for shape matching (default: auto-detected). |
@@ -159,7 +171,8 @@ Intricate images are the main thing that does *not* work well, however large the
 
 #### Image size
 
-Measured on a 1400×860 logo in the default `shape` style at 180 characters wide.
+Measured on a 1400×860 logo in the `shape` style (what `auto` uses for logos) at 180
+characters wide.
 "Detail kept" compares the art with the art made from the full-quality image.
 
 | Source width | Result | Convert time | Peak memory |
@@ -219,8 +232,8 @@ If an image is too intricate:
    black and white; thicken thin lines.
 3. **Go wider** (`-w 220`, `-w 300`) if the problem is small text or thin lines, and view
    the result in a wide window.
-4. **Try another style:** `-m braille --dither` or `-m ascii` suit photos better than the
-   default `shape`.
+4. **Try another style:** `auto` already switches photos to `ascii` with the `long` ramp;
+   `-m braille --dither` is worth a try too, and `--ramp short` gives a bolder look.
 5. **Preview before you share:** generate the program and run it
    (`python goldberg.py -i logo.png -o puzzle.py && python puzzle.py`).
 
@@ -235,8 +248,11 @@ If an image is too intricate:
   Pillow's built-in decompression-bomb protection, and very large PNG/TIFF files (40+
   megapixels) need 0.5–1 GB of memory to decode.
 - **Tall images** (e.g. long screenshots) are narrowed so the art stays within 500 rows.
-- **Photographs** convert less cleanly than flat graphics. Shading becomes texture; try
-  `-m braille --dither` or `-m ascii` and experiment with `-w`.
+- **Photographs** convert less cleanly than flat graphics: shading becomes texture. `auto`
+  picks the photo-friendly `ascii` style with the `long` ramp; experiment with `-w`,
+  `--ramp` and `-m braille --dither`. A photo with a plain, uniform background (e.g. a
+  product shot on white) counts as logo-like, so use `-m ascii --ramp long` if the `shape`
+  result looks too harsh.
 - **Colour is lost.** Art is monochrome; different colours are only distinguished by
   brightness, and two colours of similar brightness merge into one shape.
 - **Viewing wide art.** Output wider than your terminal or editor will wrap and look
@@ -270,7 +286,9 @@ If an image is too intricate:
 python -m unittest discover -s tests
 ```
 
-The suite (42 tests) covers correctness across many seeds and tricky strings, the line
-budget (default range, custom and exact budgets, impossible budgets), randomness, every byte transform, image formats and bit depths, transparency, EXIF
-rotation, large and blank images, error messages, and the command line. Tests that need an
-optional codec or package are skipped when it is not installed.
+The suite (46 tests) covers correctness across many seeds and tricky strings, the line
+budget (default range, custom and exact budgets, impossible budgets), randomness,
+automatic style choice and ramp presets, every byte transform, image formats and bit
+depths, transparency, EXIF rotation, large and blank images, error messages, and the
+command line. Tests that need an optional codec or package are skipped when it is not
+installed.
